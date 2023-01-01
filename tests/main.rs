@@ -7,8 +7,9 @@ fn main () {
     const AL: &CSubStr = unsafe { CSubStr::from_str_unchecked("al") };
     use cstring::CSubStr;
 
-    let mut correct = CString::from_string("Alex!".to_string()).unwrap();
-    correct.uppercase();
+    let correct = CString::from_string("Alex!".to_string()).unwrap();
+    let upper = correct.to_uppercase();
+    let lower = correct.to_lowercase();
 
-    println!("{correct:?}");
+    println!("{correct}\n{upper}\n{lower}");
 }

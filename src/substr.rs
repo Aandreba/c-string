@@ -2,6 +2,7 @@ use core::{ffi::c_char, ops::{Deref, DerefMut, Index, IndexMut}, borrow::Borrow,
 use docfg::docfg;
 #[cfg(feature = "simd")]
 use {core::simd::*, crate::{SIMD_64, SIMD_128, SIMD_512, SIMD_256}};
+use crate::CString;
 #[cfg(feature = "nightly")]
 use crate::pattern::*;
 
@@ -89,6 +90,33 @@ impl CSubStr {
     }
 }
 
+impl CSubStr {
+    #[docfg(feature = "alloc_api")]
+    #[inline]
+    pub fn to_cstring_in<A: core::alloc::Allocator> (&self, alloc: A) -> CString<A> {
+        return CString::from_substr_in(self, alloc)
+    }
+
+    #[inline]
+    pub fn to_cstring (&self) -> CString {
+        return CString::from_substr(self)
+    }
+
+    #[inline]
+    pub fn to_uppercase (&self) -> CString {
+        let mut result = self.to_cstring();
+        result.uppercase();
+        return result
+    }
+
+    #[inline]
+    pub fn to_lowercase (&self) -> CString {
+        let mut result = self.to_cstring();
+        result.lowercase();
+        return result
+    }
+}
+
 #[cfg(feature = "simd")]
 impl CSubStr {
     #[inline]
@@ -96,77 +124,107 @@ impl CSubStr {
         Self::uppercase_inner(self.as_mut_c_chars())
     }
 
+    #[inline]
+    pub fn lowercase (&mut self) {
+        Self::lowercase_inner(self.as_mut_c_chars())
+    }
+
     fn uppercase_inner (mut chars: &mut [c_char]) {
         const MIN_CHAR: c_char = b'a' as c_char;
         const MAX_CHAR: c_char = b'z' as c_char;
 
-        macro_rules! uppercase_inner {
-            ($fn:ident, $bits:literal) => {
-                fn $fn (chars: &mut [c_char]) -> Result<(&mut [c_char], &mut [c_char]), &mut [c_char]> {
-                    const BYTES: usize = $bits / (8 * core::mem::size_of::<c_char>());
-            
-                    if chars.len() > BYTES {
-                        const CASE_MASK: Simd<c_char, BYTES> = Simd::from_array([ASCII_CASE_MASK; BYTES]);
-                        const MIN: Simd<c_char, BYTES> = Simd::from_array([MIN_CHAR; BYTES]);
-                        const MAX: Simd<c_char, BYTES> = Simd::from_array([MAX_CHAR; BYTES]);
-            
-                        let (lhs, simd, rhs) = chars.as_simd_mut::<BYTES>();
-                        for x in simd.iter_mut() {
-                            let are_lower = x.simd_le(MAX) & x.simd_ge(MIN);
-                            *x ^= CASE_MASK & are_lower.to_int().cast::<c_char>()
-                        }
-            
-                        return Ok((lhs, rhs))
+        macro_rules! inner {
+            ($bits:literal, $has:expr) => {
+                if $has {
+                    match uppercase_inner! { $bits, chars } {
+                        Ok((lhs, rhs)) => {
+                            chars = lhs;
+                            Self::uppercase_inner(rhs)
+                        },
+                        Err(this) => chars = this
                     }
-
-                    return Err(chars)
                 }
             };
         }
 
-        if SIMD_512 {
-            uppercase_inner! { uppercase_512, 512 }
-            match uppercase_512(chars) {
-                Ok((lhs, rhs)) => {
-                    chars = lhs;
-                    Self::uppercase_inner(rhs)
-                },
-                Err(this) => chars = this
-            }
+        macro_rules! uppercase_inner {
+            ($bits:literal, $chars:expr) => {{
+                const BYTES: usize = $bits / (8 * core::mem::size_of::<c_char>());
+        
+                if chars.len() > BYTES {
+                    const CASE_MASK: Simd<c_char, BYTES> = Simd::from_array([ASCII_CASE_MASK; BYTES]);
+                    const MIN: Simd<c_char, BYTES> = Simd::from_array([MIN_CHAR; BYTES]);
+                    const MAX: Simd<c_char, BYTES> = Simd::from_array([MAX_CHAR; BYTES]);
+        
+                    let (lhs, simd, rhs) = chars.as_simd_mut::<BYTES>();
+                    for x in simd.iter_mut() {
+                        let are_lower = x.simd_le(MAX) & x.simd_ge(MIN);
+                        *x ^= CASE_MASK & are_lower.to_int().cast::<c_char>()
+                    }
+        
+                    Ok((lhs, rhs))
+                } else {
+                    Err(chars)
+                }
+            }};
         }
 
-        if SIMD_256 {
-            uppercase_inner! { uppercase_256, 256 }
-            match uppercase_256(chars) {
-                Ok((lhs, rhs)) => {
-                    chars = lhs;
-                    Self::uppercase_inner(rhs)
-                },
-                Err(this) => chars = this
+        inner! { 512, SIMD_512 }
+        inner! { 256, SIMD_256 }
+        inner! { 128, SIMD_128 }
+        inner! { 64, SIMD_64 }
+
+        for c in chars {
+            if matches!(*c, MIN_CHAR..=MAX_CHAR) {
+                *c ^= ASCII_CASE_MASK;
             }
+        }
+    }
+
+    fn lowercase_inner (mut chars: &mut [c_char]) {
+        const MIN_CHAR: c_char = b'A' as c_char;
+        const MAX_CHAR: c_char = b'Z' as c_char;
+
+        macro_rules! inner {
+            ($bits:literal, $has:expr) => {
+                if $has {
+                    match lowercase_inner! { $bits, chars } {
+                        Ok((lhs, rhs)) => {
+                            chars = lhs;
+                            Self::lowercase_inner(rhs)
+                        },
+                        Err(this) => chars = this
+                    }
+                }
+            };
         }
 
-        if SIMD_128 {
-            uppercase_inner! { uppercase_128, 128 }
-            match uppercase_128(chars) {
-                Ok((lhs, rhs)) => {
-                    chars = lhs;
-                    Self::uppercase_inner(rhs)
-                },
-                Err(this) => chars = this
-            }
+        macro_rules! lowercase_inner {
+            ($bits:literal, $chars:expr) => {{
+                const BYTES: usize = $bits / (8 * core::mem::size_of::<c_char>());
+        
+                if chars.len() > BYTES {
+                    const CASE_MASK: Simd<c_char, BYTES> = Simd::from_array([ASCII_CASE_MASK; BYTES]);
+                    const MIN: Simd<c_char, BYTES> = Simd::from_array([MIN_CHAR; BYTES]);
+                    const MAX: Simd<c_char, BYTES> = Simd::from_array([MAX_CHAR; BYTES]);
+        
+                    let (lhs, simd, rhs) = chars.as_simd_mut::<BYTES>();
+                    for x in simd.iter_mut() {
+                        let are_lower = x.simd_le(MAX) & x.simd_ge(MIN);
+                        *x ^= CASE_MASK & are_lower.to_int().cast::<c_char>()
+                    }
+        
+                    Ok((lhs, rhs))
+                } else {
+                    Err(chars)
+                }
+            }};
         }
 
-        if SIMD_64 {
-            uppercase_inner! { uppercase_64, 64 }
-            match uppercase_64(chars) {
-                Ok((lhs, rhs)) => {
-                    chars = lhs;
-                    Self::uppercase_inner(rhs)
-                },
-                Err(this) => chars = this
-            }
-        }
+        inner! { 512, SIMD_512 }
+        inner! { 256, SIMD_256 }
+        inner! { 128, SIMD_128 }
+        inner! { 64, SIMD_64 }
 
         for c in chars {
             if matches!(*c, MIN_CHAR..=MAX_CHAR) {
@@ -182,6 +240,18 @@ impl CSubStr {
     pub fn uppercase (&mut self) {
         const MIN_CHAR: c_char = b'a' as c_char;
         const MAX_CHAR: c_char = b'z' as c_char;
+
+        for c in self.as_mut_c_chars() {
+            if matches!(*c, MIN_CHAR..=MAX_CHAR) {
+                *c ^= ASCII_CASE_MASK;
+            }
+        }
+    }
+
+    #[inline]
+    pub fn lowercase (&mut self) {
+        const MIN_CHAR: c_char = b'A' as c_char;
+        const MAX_CHAR: c_char = b'Z' as c_char;
 
         for c in self.as_mut_c_chars() {
             if matches!(*c, MIN_CHAR..=MAX_CHAR) {

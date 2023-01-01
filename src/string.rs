@@ -1,4 +1,4 @@
-use core::{ffi::c_char, ptr::{NonNull}, marker::PhantomData, ops::{Deref, DerefMut}, hash::Hash, borrow::{Borrow, BorrowMut}};
+use core::{ffi::c_char, ptr::{NonNull}, marker::PhantomData, ops::{Deref, DerefMut}, hash::Hash, borrow::{Borrow, BorrowMut}, mem::ManuallyDrop};
 use docfg::docfg;
 use memchr::memchr;
 use crate::{CStr, NUL_CHAR_PTR, error::NulError, CMutStr, CSubStr, strlen};
@@ -59,6 +59,11 @@ cfg_if::cfg_if! {
             pub const fn new () -> Self {
                 return Self::new_in(Global)
             }
+
+            #[inline]
+            pub fn from_substr (sub: &CSubStr) -> Self {
+                return Self::from_substr_in(sub, Global)
+            }
             
             #[inline]
             pub fn with_capacity (capacity: usize) -> Self {
@@ -72,6 +77,13 @@ cfg_if::cfg_if! {
                     inner: unsafe { NonNull::new_unchecked(NUL_CHAR_PTR.cast_mut()) },
                     capacity: 0
                 }
+            }
+
+            #[inline]
+            pub fn from_substr (sub: &CSubStr) -> Self {
+                let mut this = Self::with_capacity(sub.len());
+                this.append(sub);
+                return this
             }
         
             pub fn with_capacity (capacity: usize) -> Self {
@@ -97,6 +109,13 @@ impl<A: Allocator> CString<A> {
             capacity: 0,
             alloc
         }
+    }
+
+    #[inline]
+    pub fn from_substr_in (sub: &CSubStr, alloc: A) -> Self {
+        let mut this = Self::with_capacity_in(sub.len(), alloc);
+        this.append(sub);
+        return this
     }
     
     /// # Panics
@@ -146,6 +165,36 @@ impl_all! {
     pub fn push (&mut self, c: c_char) {
         assert_ne!(c, 0);
         return unsafe { self.push_unchecked(c) }
+    }
+
+    #[inline]
+    pub fn append (&mut self, chars: &CSubStr) {
+        self.reserve(chars.len());
+
+        unsafe {
+            let ptr = self.as_mut_ptr().add(self.len());
+            core::ptr::copy_nonoverlapping(
+                chars.as_ptr(),
+                ptr,
+                chars.len()
+            );
+
+            ptr.add(chars.len()).add(1).write(0);
+        }
+    }
+
+    #[inline]
+    pub fn clear (&mut self) {
+        unsafe { self.as_mut_ptr().write(0) };
+    }
+
+    #[inline]
+    pub fn leak<'a> (self) -> &'a mut CSubStr {
+        let mut this = ManuallyDrop::new(self);
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(this.as_mut_ptr(), this.len());
+            return CSubStr::from_mut_chars_unchecked(slice)
+        }
     }
 }
 
@@ -477,6 +526,24 @@ impl_all! {
         #[inline]
         fn hash<H: core::hash::Hasher> (&self, state: &mut H) {
             self.as_c_chars().hash(state);
+        }
+    }
+}
+
+#[docfg(feature = "nightly")]
+impl_all! {
+    trait Extend<core::ffi::NonZero_c_char> {
+        #[inline]
+        fn extend<T: IntoIterator<Item = core::ffi::NonZero_c_char>>(&mut self, iter: T) {
+            let iter = iter.into_iter();
+            self.reserve(match iter.size_hint() {
+                (_, Some(len)) => len,
+                (len, _) => len
+            });
+
+            for c in iter {
+                self.push_nonzero(c)
+            }
         }
     }
 }
