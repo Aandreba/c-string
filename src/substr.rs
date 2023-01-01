@@ -90,98 +90,17 @@ impl CSubStr {
 }
 
 #[cfg(feature = "simd")]
-macro_rules! impl_simd {
-    ($lhs:ident, $rhs:ident, $mask:expr => $t:tt ) => {
-        if SIMD_512 {
-            const SIZE_512: usize = 512 / (8 * core::mem::size_of::<c_char>());
-            const MASK_512: Simd<c_char, SIZE_512> = Simd::from_array([$mask; SIZE_512]);
-
-            let (lhs, simd, rhs) = $lhs.as_simd_mut::<SIZE_512>();
-            simd.iter_mut().for_each(|x| *x $t MASK_512);
-
-            match lhs.len() >= rhs.len() {
-                true => {
-                    $lhs = lhs;
-                    $rhs = rhs;
-                },
-                false => {
-                    $lhs = rhs;
-                    $rhs = lhs;
-                }
-            }
-        }
-
-        if SIMD_256 {
-            const SIZE_256: usize = 256 / (8 * core::mem::size_of::<c_char>());
-            const MASK_256: Simd<c_char, SIZE_256> = Simd::from_array([$mask; SIZE_256]);
-
-            let (lhs, simd, rhs) = $lhs.as_simd_mut::<SIZE_256>();
-            simd.iter_mut().for_each(|x| *x $t MASK_256);
-
-            match lhs.len() >= rhs.len() {
-                true => {
-                    $lhs = lhs;
-                    $rhs = rhs;
-                },
-                false => {
-                    $lhs = rhs;
-                    $rhs = lhs;
-                }
-            }
-        }
-
-        const SIZE_128: usize = 128 / (8 * core::mem::size_of::<c_char>());
-        const MASK_128: Simd<c_char, SIZE_128> = Simd::from_array([$mask; SIZE_128]);
-
-        let (lhs, simd, rhs) = $lhs.as_simd_mut::<SIZE_128>();
-        simd.iter_mut().for_each(|x| *x $t MASK_128);
-
-        match lhs.len() >= rhs.len() {
-            true => {
-                $lhs = lhs;
-                $rhs = rhs;
-            },
-            false => {
-                $lhs = rhs;
-                $rhs = lhs;
-            }
-        }
-
-        if SIMD_64 {
-            const SIZE_64: usize = 64 / (8 * core::mem::size_of::<c_char>());
-            const MASK_64: Simd<c_char, SIZE_64> = Simd::from_array([$mask; SIZE_64]);
-
-            let (lhs, simd, rhs) = $lhs.as_simd_mut::<SIZE_64>();
-            simd.iter_mut().for_each(|x| *x $t MASK_64);
-
-            $lhs = lhs;
-            $rhs = rhs;
-        }
-
-        $lhs.iter_mut().for_each(|x| *x $t $mask);
-        $rhs.iter_mut().for_each(|x| *x $t $mask);
-    };
-}
-
-#[cfg(feature = "simd")]
 impl CSubStr {
     #[allow(unused_assignments)]
-    #[inline]
     pub fn uppercase (&mut self) {
-        const MIN_CHAR: c_char = b'a' as c_char;
-        const MAX_CHAR: c_char = b'z' as c_char;
-
-        let mut this_lhs = self.as_mut_c_chars();
-        let mut this_rhs: &mut [c_char];
-
         macro_rules! uppercase {
-            ($bits:literal) => {
+            ($bits:literal => $target:ident) => {{
                 const BYTES: usize = $bits / (8 * core::mem::size_of::<c_char>());
                 const CASE_MASK: Simd<c_char, BYTES> = Simd::from_array([ASCII_CASE_MASK; BYTES]);
                 const MIN: Simd<c_char, BYTES> = Simd::from_array([MIN_CHAR; BYTES]);
                 const MAX: Simd<c_char, BYTES> = Simd::from_array([MAX_CHAR; BYTES]);
 
-                let (lhs, simd, rhs) = this_lhs.as_simd_mut::<BYTES>();
+                let (lhs, simd, rhs) = $target.as_simd_mut::<BYTES>();
                 for x in simd.iter_mut() {
                     let are_lower = x.simd_le(MAX) & x.simd_ge(MIN);
                     *x ^= CASE_MASK & are_lower.to_int().cast::<c_char>()
@@ -189,25 +108,42 @@ impl CSubStr {
 
                 this_lhs = lhs;
                 this_rhs = rhs;
+            }};
+        }
+
+        macro_rules! uppercase_inner {
+            ($fn:ident, $bits:literal) => {
+                fn $fn (chars: &mut [c_char]) -> Result<(&mut [c_char], &mut [c_char]), &mut [c_char]> {
+                    const BYTES: usize = $bits / (8 * core::mem::size_of::<c_char>());
+                    const MIN_CHAR: c_char = b'a' as c_char;
+                    const MAX_CHAR: c_char = b'z' as c_char;
+            
+                    if chars.len() > BYTES {
+                        const CASE_MASK: Simd<c_char, BYTES> = Simd::from_array([ASCII_CASE_MASK; BYTES]);
+                        const MIN: Simd<c_char, BYTES> = Simd::from_array([MIN_CHAR; BYTES]);
+                        const MAX: Simd<c_char, BYTES> = Simd::from_array([MAX_CHAR; BYTES]);
+            
+                        let (lhs, simd, rhs) = chars.as_simd_mut::<BYTES>();
+                        for x in simd.iter_mut() {
+                            let are_lower = x.simd_le(MAX) & x.simd_ge(MIN);
+                            *x ^= CASE_MASK & are_lower.to_int().cast::<c_char>()
+                        }
+            
+                        return Ok((lhs, rhs))
+                    }
+
+                    return Err(chars)
+                }
             };
         }
 
-        if SIMD_512 { uppercase! { 512 } }
-        if SIMD_256 { uppercase! { 256 } }
-        uppercase! { 128 }
-        if SIMD_64 { uppercase! { 64 } }
-
-        this_lhs.iter_mut().for_each(|x| {
-            if matches!(x, MIN_CHAR..=MAX_CHAR) {
-                *x ^= ASCII_CASE_MASK;
+        if SIMD_512 {
+            uppercase_inner! { uppercase_512, 512 }
+            match uppercase_512(self.as_mut_c_chars()) {
+                Ok((lhs, rhs)) => {},
+                Err(e) => todo!()
             }
-        });
-
-        this_rhs.iter_mut().for_each(|x| {
-            if matches!(x, MIN_CHAR..=MAX_CHAR) {
-                *x ^= ASCII_CASE_MASK;
-            }
-        });
+        }
     }
 }
 

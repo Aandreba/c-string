@@ -20,6 +20,31 @@ cfg_if::cfg_if! {
             target_feature = "neon"
         ));
 
+        pub(crate) const SIMD_128: bool = cfg!(
+            any(
+                all(
+                    any(
+                        target_arch = "x86",
+                        target_arch = "x86_64"
+                    ),
+                    target_feature = "sse2"
+                ),
+
+                all(
+                    any(
+                        target_arch = "arm",
+                        target_arch = "aarch64"
+                    ),
+                    target_feature = "neon"
+                ),
+
+                all(
+                    target_family = "wasm",
+                    target_feature = "simd128"
+                )
+            )
+        );
+
         pub(crate) const SIMD_256: bool = cfg!(
             all(
                 any(
@@ -67,11 +92,10 @@ pub mod error;
 #[cfg(feature = "nightly")]
 pub mod pattern;
 
-use core::{ffi::{c_char, c_int}};
+use core::{ffi::{c_char}};
 
 extern "C" {
     pub(crate) fn strlen (p: *const c_char) -> usize;
-    pub(crate) fn strcmp (lhs: *const c_char, rhs: *const c_char) -> c_int;
 }
 
 #[allow(dead_code)]
