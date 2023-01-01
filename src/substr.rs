@@ -1,7 +1,7 @@
 use core::{ffi::c_char, ops::{Deref, DerefMut, Index, IndexMut}, borrow::Borrow, fmt::{Debug, Display}};
 use docfg::docfg;
 #[cfg(feature = "simd")]
-use {core::simd::*, crate::{SIMD_64, SIMD_512, SIMD_256}};
+use {core::simd::*, crate::{SIMD_64, SIMD_128, SIMD_512, SIMD_256}};
 #[cfg(feature = "nightly")]
 use crate::pattern::*;
 
@@ -91,32 +91,19 @@ impl CSubStr {
 
 #[cfg(feature = "simd")]
 impl CSubStr {
-    #[allow(unused_assignments)]
+    #[inline]
     pub fn uppercase (&mut self) {
-        macro_rules! uppercase {
-            ($bits:literal => $target:ident) => {{
-                const BYTES: usize = $bits / (8 * core::mem::size_of::<c_char>());
-                const CASE_MASK: Simd<c_char, BYTES> = Simd::from_array([ASCII_CASE_MASK; BYTES]);
-                const MIN: Simd<c_char, BYTES> = Simd::from_array([MIN_CHAR; BYTES]);
-                const MAX: Simd<c_char, BYTES> = Simd::from_array([MAX_CHAR; BYTES]);
+        Self::uppercase_inner(self.as_mut_c_chars())
+    }
 
-                let (lhs, simd, rhs) = $target.as_simd_mut::<BYTES>();
-                for x in simd.iter_mut() {
-                    let are_lower = x.simd_le(MAX) & x.simd_ge(MIN);
-                    *x ^= CASE_MASK & are_lower.to_int().cast::<c_char>()
-                }
-
-                this_lhs = lhs;
-                this_rhs = rhs;
-            }};
-        }
+    fn uppercase_inner (mut chars: &mut [c_char]) {
+        const MIN_CHAR: c_char = b'a' as c_char;
+        const MAX_CHAR: c_char = b'z' as c_char;
 
         macro_rules! uppercase_inner {
             ($fn:ident, $bits:literal) => {
                 fn $fn (chars: &mut [c_char]) -> Result<(&mut [c_char], &mut [c_char]), &mut [c_char]> {
                     const BYTES: usize = $bits / (8 * core::mem::size_of::<c_char>());
-                    const MIN_CHAR: c_char = b'a' as c_char;
-                    const MAX_CHAR: c_char = b'z' as c_char;
             
                     if chars.len() > BYTES {
                         const CASE_MASK: Simd<c_char, BYTES> = Simd::from_array([ASCII_CASE_MASK; BYTES]);
@@ -139,9 +126,51 @@ impl CSubStr {
 
         if SIMD_512 {
             uppercase_inner! { uppercase_512, 512 }
-            match uppercase_512(self.as_mut_c_chars()) {
-                Ok((lhs, rhs)) => {},
-                Err(e) => todo!()
+            match uppercase_512(chars) {
+                Ok((lhs, rhs)) => {
+                    chars = lhs;
+                    Self::uppercase_inner(rhs)
+                },
+                Err(this) => chars = this
+            }
+        }
+
+        if SIMD_256 {
+            uppercase_inner! { uppercase_256, 256 }
+            match uppercase_256(chars) {
+                Ok((lhs, rhs)) => {
+                    chars = lhs;
+                    Self::uppercase_inner(rhs)
+                },
+                Err(this) => chars = this
+            }
+        }
+
+        if SIMD_128 {
+            uppercase_inner! { uppercase_128, 128 }
+            match uppercase_128(chars) {
+                Ok((lhs, rhs)) => {
+                    chars = lhs;
+                    Self::uppercase_inner(rhs)
+                },
+                Err(this) => chars = this
+            }
+        }
+
+        if SIMD_64 {
+            uppercase_inner! { uppercase_64, 64 }
+            match uppercase_64(chars) {
+                Ok((lhs, rhs)) => {
+                    chars = lhs;
+                    Self::uppercase_inner(rhs)
+                },
+                Err(this) => chars = this
+            }
+        }
+
+        for c in chars {
+            if matches!(*c, MIN_CHAR..=MAX_CHAR) {
+                *c ^= ASCII_CASE_MASK;
             }
         }
     }
@@ -150,8 +179,15 @@ impl CSubStr {
 #[cfg(not(feature = "simd"))]
 impl CSubStr {
     #[inline]
-    pub fn switch_case (&mut self) {
-        self.as_mut_c_chars().iter_mut().for_each(|c| *c ^= ASCII_CASE_MASK)
+    pub fn uppercase (&mut self) {
+        const MIN_CHAR: c_char = b'a' as c_char;
+        const MAX_CHAR: c_char = b'z' as c_char;
+
+        for c in self.as_mut_c_chars() {
+            if matches!(*c, MIN_CHAR..=MAX_CHAR) {
+                *c ^= ASCII_CASE_MASK;
+            }
+        }
     }
 }
 
